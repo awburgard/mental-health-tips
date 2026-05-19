@@ -63,22 +63,17 @@
   {% endif %}
 
   <form method="post" action="{{ url_for('submit') }}" autocomplete="off">
-    <label for="category">Category</label>
-    <select id="category" name="category" required>
-      <option value="" disabled selected>Pick one…</option>
-      {% for c in categories %}
-      <option value="{{ c }}">{{ c }}</option>
-      {% endfor %}
-    </select>
-
-    <label for="content">Your tip</label>
+    <label for="content">What's something that's been helping you lately?</label>
+    <p class="field-hint">
+      Could be anything. Music, a habit, a show, a boundary you set, a small
+      routine, whatever's making things a little easier.
+    </p>
     <textarea
       id="content"
       name="content"
       required
       maxlength="{{ max_len }}"
       rows="8"
-      placeholder="Something that's helped you with stress, burnout, sleep, balance, or general wellbeing. Avoid details that identify your team or role."
     ></textarea>
     <p class="charcount"><span id="count">0</span> / {{ max_len }}</p>
 

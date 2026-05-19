@@ -45,7 +45,6 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "")  # e.g. https://tips.example.com
 MAX_CONTENT_LEN = 2000
-CATEGORIES = ["Stress", "Burnout", "Work-Life", "Sleep", "General"]
 
 APPROVED_PURGE_DAYS = int(os.environ.get("APPROVED_PURGE_DAYS", "30"))
 DENIED_PURGE_DAYS = int(os.environ.get("DENIED_PURGE_DAYS", "7"))
@@ -95,10 +94,39 @@ def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.executescript(schema.read_text())
-        # Defensive migration: add slack_ts to any pre-existing DB that lacks it.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(submissions)")]
+        # Defensive migration: add slack_ts to any pre-existing DB that lacks it.
         if "slack_ts" not in cols:
             conn.execute("ALTER TABLE submissions ADD COLUMN slack_ts TEXT")
+        # Defensive migration: drop the legacy category column if it exists.
+        # SQLite >= 3.35 supports DROP COLUMN directly; older falls back to
+        # a table rebuild.
+        if "category" in cols:
+            try:
+                conn.execute("ALTER TABLE submissions DROP COLUMN category")
+            except sqlite3.OperationalError:
+                conn.executescript("""
+                    CREATE TABLE submissions_new (
+                        id            TEXT PRIMARY KEY,
+                        content       TEXT NOT NULL,
+                        status        TEXT NOT NULL DEFAULT 'pending',
+                        created_at    INTEGER NOT NULL,
+                        reviewed_at   INTEGER,
+                        deny_reason   TEXT,
+                        slack_posted  INTEGER NOT NULL DEFAULT 0,
+                        slack_ts      TEXT
+                    );
+                    INSERT INTO submissions_new
+                        (id, content, status, created_at, reviewed_at,
+                         deny_reason, slack_posted, slack_ts)
+                    SELECT id, content, status, created_at, reviewed_at,
+                           deny_reason, slack_posted, slack_ts
+                    FROM submissions;
+                    DROP TABLE submissions;
+                    ALTER TABLE submissions_new RENAME TO submissions;
+                    CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);
+                    CREATE INDEX IF NOT EXISTS idx_submissions_reviewed_at ON submissions(reviewed_at);
+                """)
         conn.commit()
     finally:
         conn.close()
@@ -157,7 +185,7 @@ def _slack_call(method: str, payload: dict) -> tuple[bool, str, dict]:
     return True, "ok", data
 
 
-def post_to_slack(text: str, category: str):
+def post_to_slack(text: str):
     """Post a tip to Slack. Returns (ok: bool, detail: str, slack_ts: str | None).
 
     We use Block Kit with plain_text blocks so anything the submitter wrote is
@@ -165,14 +193,14 @@ def post_to_slack(text: str, category: str):
     fake links, no @here pings. Slack also cannot interpret stray characters
     in user content as formatting.
     """
-    title = f"Anonymous tip — {category}"
+    title = "Anonymous tip"
     ok, detail, data = _slack_call(
         "chat.postMessage",
         {
             "channel": SLACK_CHANNEL_ID,
             "blocks": [
                 {"type": "header",
-                 "text": {"type": "plain_text", "text": title[:150]}},
+                 "text": {"type": "plain_text", "text": title}},
                 {"type": "section",
                  "text": {"type": "plain_text", "text": text}},
             ],
@@ -257,31 +285,21 @@ def add_security_headers(resp):
 
 @app.route("/", methods=["GET"])
 def form():
-    return render_template("form.html", categories=CATEGORIES, max_len=MAX_CONTENT_LEN)
+    return render_template("form.html", max_len=MAX_CONTENT_LEN)
 
 
 @app.route("/submit", methods=["POST"])
 def submit():
-    # No origin check here on purpose: /submit is unauthenticated, has no
-    # session, and accepts public input — there is no CSRF privilege to abuse.
-    # The origin check is kept on the authenticated /admin/* routes, where it
-    # actually defends against tricking a logged-in reviewer into acting.
+    # No CSRF token / origin check here: /submit is unauthenticated, has no
+    # session, and accepts public input — there is no privilege to abuse.
+    # CSRF on the admin routes is handled by SameSite=Strict on the cookie.
     content = (request.form.get("content") or "").strip()
-    category = (request.form.get("category") or "").strip()
 
     if not content or len(content) > MAX_CONTENT_LEN:
         return render_template(
             "form.html",
-            categories=CATEGORIES,
             max_len=MAX_CONTENT_LEN,
             error=f"Tip must be 1–{MAX_CONTENT_LEN} characters.",
-        ), 400
-    if category not in CATEGORIES:
-        return render_template(
-            "form.html",
-            categories=CATEGORIES,
-            max_len=MAX_CONTENT_LEN,
-            error="Please pick a category.",
         ), 400
 
     # Strip non-printable characters defensively (paste hygiene).
@@ -289,12 +307,12 @@ def submit():
 
     db = get_db()
     db.execute(
-        "INSERT INTO submissions (id, content, category, status, created_at) "
-        "VALUES (?, ?, ?, 'pending', ?)",
-        (new_id(), clean, category, now_hour()),
+        "INSERT INTO submissions (id, content, status, created_at) "
+        "VALUES (?, ?, 'pending', ?)",
+        (new_id(), clean, now_hour()),
     )
     db.commit()
-    log_event("submission_received", category=category, length=len(clean))
+    log_event("submission_received", length=len(clean))
     return redirect(url_for("thanks"))
 
 
@@ -326,19 +344,19 @@ def admin_logout():
 def admin():
     db = get_db()
     pending = db.execute(
-        "SELECT id, content, category, created_at FROM submissions "
+        "SELECT id, content, created_at FROM submissions "
         "WHERE status = 'pending'"
     ).fetchall()
     pending = list(pending)
     random.shuffle(pending)  # never show submission order to a reviewer
 
     failed = db.execute(
-        "SELECT id, content, category FROM submissions "
+        "SELECT id, content FROM submissions "
         "WHERE status = 'approved' AND slack_posted = 0"
     ).fetchall()
 
     posted = db.execute(
-        "SELECT id, content, category, reviewed_at FROM submissions "
+        "SELECT id, content, reviewed_at FROM submissions "
         "WHERE status = 'approved' AND slack_posted = 1 AND slack_ts IS NOT NULL "
         "ORDER BY reviewed_at DESC"
     ).fetchall()
@@ -357,13 +375,13 @@ def admin_approve():
     sub_id = request.form.get("id", "")
     db = get_db()
     row = db.execute(
-        "SELECT content, category FROM submissions WHERE id = ? AND status = 'pending'",
+        "SELECT content FROM submissions WHERE id = ? AND status = 'pending'",
         (sub_id,),
     ).fetchone()
     if not row:
         return redirect(url_for("admin"))
 
-    ok, detail, ts = post_to_slack(row["content"], row["category"])
+    ok, detail, ts = post_to_slack(row["content"])
     db.execute(
         "UPDATE submissions SET status='approved', reviewed_at=?, slack_posted=?, slack_ts=? "
         "WHERE id = ?",
@@ -380,14 +398,14 @@ def admin_retry():
     sub_id = request.form.get("id", "")
     db = get_db()
     row = db.execute(
-        "SELECT content, category FROM submissions "
+        "SELECT content FROM submissions "
         "WHERE id = ? AND status = 'approved' AND slack_posted = 0",
         (sub_id,),
     ).fetchone()
     if not row:
         return redirect(url_for("admin"))
 
-    ok, detail, ts = post_to_slack(row["content"], row["category"])
+    ok, detail, ts = post_to_slack(row["content"])
     if ok:
         db.execute(
             "UPDATE submissions SET slack_posted=1, slack_ts=? WHERE id = ?",

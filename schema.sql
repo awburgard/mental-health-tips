@@ -3,7 +3,6 @@
 CREATE TABLE IF NOT EXISTS submissions (
     id            TEXT PRIMARY KEY,             -- random UUIDv4, not sequential
     content       TEXT NOT NULL,                -- the tip text, plain text only
-    category      TEXT NOT NULL,                -- one of the allowed categories
     status        TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | denied
     created_at    INTEGER NOT NULL,             -- unix seconds, ROUNDED TO THE HOUR
     reviewed_at   INTEGER,                      -- unix seconds, rounded to the hour

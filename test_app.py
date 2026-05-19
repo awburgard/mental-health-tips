@@ -37,7 +37,8 @@ def test_schema_has_no_pii_columns(client):
     conn.close()
 
     forbidden = {"ip", "ip_address", "user_agent", "session", "session_id",
-                 "submitter", "submitter_id", "email", "name", "user", "user_id"}
+                 "submitter", "submitter_id", "email", "name", "user", "user_id",
+                 "category"}  # category was removed; guard against accidental re-add
     leaked = [c for c in cols if c.lower() in forbidden]
     assert not leaked, f"DB schema contains forbidden columns: {leaked}"
 
@@ -45,7 +46,7 @@ def test_schema_has_no_pii_columns(client):
 def test_submission_stores_only_expected_fields(client):
     c, app_module, db_path = client
     with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "1.0")):
-        resp = c.post("/submit", data={"content": "drink water", "category": "General"})
+        resp = c.post("/submit", data={"content": "drink water"})
     assert resp.status_code in (302, 303)
 
     conn = sqlite3.connect(db_path)
@@ -55,7 +56,6 @@ def test_submission_stores_only_expected_fields(client):
     record = dict(zip(cols, row))
 
     assert record["content"] == "drink water"
-    assert record["category"] == "General"
     assert record["status"] == "pending"
     assert record["created_at"] % 3600 == 0, "created_at must be rounded to the hour"
 
@@ -77,7 +77,7 @@ def test_admin_login_rejects_wrong_password(client):
 def test_admin_can_approve_and_post(client):
     c, app_module, db_path = client
     with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "1234.5678")) as p:
-        c.post("/submit", data={"content": "go for a walk", "category": "Stress"})
+        c.post("/submit", data={"content": "go for a walk"})
         conn = sqlite3.connect(db_path)
         sub_id = conn.execute("SELECT id FROM submissions").fetchone()[0]
         conn.close()
@@ -91,7 +91,6 @@ def test_admin_can_approve_and_post(client):
         p.assert_called_once()
         args, _kw = p.call_args
         assert args[0] == "go for a walk"
-        assert args[1] == "Stress"
 
         # Slack ts is stored so we can delete the message later.
         conn = sqlite3.connect(db_path)
@@ -104,7 +103,7 @@ def test_admin_can_delete_posted_message(client):
     c, app_module, db_path = client
     with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "9876.5432")), \
          patch.object(app_module, "delete_slack_message", return_value=(True, "ok")) as d:
-        c.post("/submit", data={"content": "stretch", "category": "General"})
+        c.post("/submit", data={"content": "stretch"})
         conn = sqlite3.connect(db_path)
         sub_id = conn.execute("SELECT id FROM submissions").fetchone()[0]
         conn.close()
@@ -125,7 +124,7 @@ def test_admin_can_delete_posted_message(client):
 
 def test_denied_submission_keeps_no_identifying_data(client):
     c, app_module, db_path = client
-    c.post("/submit", data={"content": "rest your eyes", "category": "General"})
+    c.post("/submit", data={"content": "rest your eyes"})
     conn = sqlite3.connect(db_path)
     sub_id = conn.execute("SELECT id FROM submissions").fetchone()[0]
     conn.close()

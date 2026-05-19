@@ -25,7 +25,6 @@
     <h2>Approved but Slack post failed</h2>
     {% for s in failed %}
     <article class="card">
-      <p class="meta">{{ s['category'] }}</p>
       <p class="content">{{ s['content'] }}</p>
       <form method="post" action="{{ url_for('admin_retry') }}">
         <input type="hidden" name="id" value="{{ s['id'] }}">
@@ -45,7 +44,6 @@
     </p>
     {% for s in posted %}
     <article class="card">
-      <p class="meta">{{ s['category'] }}</p>
       <p class="content">{{ s['content'] }}</p>
       <form method="post" action="{{ url_for('admin_delete_post') }}" class="confirm-delete">
         <input type="hidden" name="id" value="{{ s['id'] }}">
@@ -63,7 +61,6 @@
     {% endif %}
     {% for s in pending %}
     <article class="card">
-      <p class="meta">{{ s['category'] }}</p>
       <p class="content">{{ s['content'] }}</p>
       <div class="actions">
         <form method="post" action="{{ url_for('admin_approve') }}">

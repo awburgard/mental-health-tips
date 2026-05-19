@@ -553,8 +553,17 @@ def submit():
     clean = "".join(ch for ch in content if ch == "\n" or ch == "\t" or ch.isprintable())
 
     mod = moderate_submission(clean)
+    has_self_harm = "self_harm" in mod["reasons"]
+
     if mod["block"]:
-        log_event("submission_blocked", reasons=",".join(mod["reasons"]))
+        log_event("submission_blocked", reasons=",".join(
+            r for r in mod["reasons"] if r in _BLOCK_CATEGORIES
+        ))
+        # If they also disclosed self-harm, getting them resources matters more
+        # than the generic rejection error. Don't save the row — there's another
+        # block category in play and HR can't usefully act on it.
+        if has_self_harm:
+            return redirect(url_for("thanks_crisis"))
         return render_template(
             "form.html",
             max_len=MAX_CONTENT_LEN,
@@ -573,12 +582,20 @@ def submit():
                   reasons=",".join(mod["reasons"]))
     else:
         log_event("submission_received", length=len(clean))
+
+    if has_self_harm:
+        return redirect(url_for("thanks_crisis"))
     return redirect(url_for("thanks"))
 
 
 @app.route("/thanks", methods=["GET"])
 def thanks():
     return render_template("thanks.html")
+
+
+@app.route("/thanks-crisis", methods=["GET"])
+def thanks_crisis():
+    return render_template("thanks_crisis.html")
 
 
 @app.route("/unlock", methods=["GET", "POST"])

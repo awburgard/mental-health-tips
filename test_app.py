@@ -283,17 +283,57 @@ def test_moderation_block_rejects_submission(client, monkeypatch):
 
 
 def test_moderation_flag_saves_with_flag(client, monkeypatch):
+    """Non-self-harm flag categories save and land on the normal thanks page."""
+    c, app_module, db_path = client
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda t: {"block": False, "flag": True, "reasons": ["workplace_grievance"]},
+    )
+    resp = c.post("/submit", data={"content": "my team is so frustrating sometimes"})
+    assert resp.status_code in (302, 303)
+    assert "/thanks-crisis" not in resp.headers["Location"]
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT flagged FROM submissions").fetchone()
+    conn.close()
+    assert row[0] == 1
+
+
+def test_self_harm_redirects_to_crisis_page_and_saves(client, monkeypatch):
+    """Self-harm content: save it (HR may judge as recovery tip) AND show resources."""
     c, app_module, db_path = client
     monkeypatch.setattr(
         app_module, "moderate_submission",
         lambda t: {"block": False, "flag": True, "reasons": ["self_harm"]},
     )
-    resp = c.post("/submit", data={"content": "i used to struggle with X and what helped was Y"})
+    resp = c.post("/submit", data={"content": "i want to hurt myself"})
     assert resp.status_code in (302, 303)
+    assert resp.headers["Location"].endswith("/thanks-crisis")
+    # Crisis page renders without auth
+    page = c.get("/thanks-crisis")
+    assert page.status_code == 200
+    body = page.get_data(as_text=True)
+    assert "988" in body
+    assert "741741" in body
     conn = sqlite3.connect(db_path)
     row = conn.execute("SELECT flagged FROM submissions").fetchone()
     conn.close()
-    assert row[0] == 1
+    assert row is not None and row[0] == 1
+
+
+def test_self_harm_with_blocking_category_does_not_save_but_still_shows_resources(client, monkeypatch):
+    """Block-worthy content combined with self-harm: don't save, but DO route them to resources."""
+    c, app_module, db_path = client
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda t: {"block": True, "flag": True, "reasons": ["hate_speech", "self_harm"]},
+    )
+    resp = c.post("/submit", data={"content": "doesn't matter"})
+    assert resp.status_code in (302, 303)
+    assert resp.headers["Location"].endswith("/thanks-crisis")
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+    conn.close()
+    assert rows == 0, "self_harm + block category should NOT persist the submission"
 
 
 def test_moderation_failure_fails_open(client, monkeypatch):

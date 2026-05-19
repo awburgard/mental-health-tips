@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Resources for you</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>Thank you for sharing.</h1>
+  <p class="lead">
+    What you wrote suggests you may be having a hard time right now. We
+    can't reach you — your submission is anonymous, which is intentional —
+    but we want to make sure you see some resources before you go.
+  </p>
+
+  <section class="crisis-box">
+    <h2>If you need support right now</h2>
+    <ul>
+      <li><strong>988 Suicide &amp; Crisis Lifeline</strong> — call or text <strong>988</strong> (free, 24/7)</li>
+      <li><strong>Crisis Text Line</strong> — text <strong>HOME</strong> to <strong>741741</strong></li>
+      <li><strong>Emergency</strong> — call <strong>911</strong> if you or someone else is in immediate danger</li>
+    </ul>
+    <p>
+      If you'd like to talk to someone here, your manager or HR can help
+      you connect to support through the proper channels. The anonymous
+      Slack channel that approved tips post to is not monitored for
+      emergencies, and it is not a substitute for professional medical or
+      mental health care.
+    </p>
+  </section>
+
+  <p>Please take care of yourself. These resources exist for you, and you are not alone.</p>
+
+  <p><a href="{{ url_for('form') }}">Back to the form</a></p>
+</main>
+</body>
+</html>

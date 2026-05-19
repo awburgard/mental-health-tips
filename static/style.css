@@ -106,6 +106,17 @@ button.approve { background: var(--accent); }
 .deny-form input[type="text"] { width: 240px; }
 .failed { border-left: 3px solid var(--warn); padding-left: 0.75rem; }
 .card.flagged { border-left: 3px solid var(--warn); }
+.crisis-box {
+  background: #fff8f1;
+  border: 1px solid #f4d9c4;
+  border-left: 3px solid var(--warn);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 1.5rem 0;
+}
+.crisis-box h2 { margin-top: 0; }
+.crisis-box ul { margin: 0.5rem 0 1rem; padding-left: 1.2rem; }
+.crisis-box li { margin: 0.35rem 0; }
 .flag-banner {
   background: #fff3ec;
   color: var(--warn);

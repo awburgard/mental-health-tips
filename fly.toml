@@ -1,0 +1,28 @@
+# Fly.io deployment config.
+# Replace "REPLACE-ME-APP-NAME" with the name you choose during `fly launch`.
+# A 256MB shared-cpu-1x machine is plenty for this workload.
+
+app = "REPLACE-ME-APP-NAME"
+primary_region = "iad"  # change to a region near you
+
+[build]
+
+[env]
+  # Defaults; override the rest via `fly secrets set`
+  APPROVED_PURGE_DAYS = "30"
+  DENIED_PURGE_DAYS = "7"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[mounts]]
+  source = "tips_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

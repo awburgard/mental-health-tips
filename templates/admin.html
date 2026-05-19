@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Review queue</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <header style="display:flex; justify-content:space-between; align-items:baseline">
+    <h1>Review queue</h1>
+    <form method="post" action="{{ url_for('admin_logout') }}" style="margin:0">
+      <button type="submit" class="deny" style="padding:0.3rem 0.7rem; font-size:0.85rem">Sign out</button>
+    </form>
+  </header>
+  <p class="lead">
+    Submissions appear in random order — not the order they came in.
+    You cannot edit a tip. Approve it as written, or deny it.
+  </p>
+
+  {% if failed %}
+  <section class="failed">
+    <h2>Approved but Slack post failed</h2>
+    {% for s in failed %}
+    <article class="card">
+      <p class="meta">{{ s['category'] }}</p>
+      <p class="content">{{ s['content'] }}</p>
+      <form method="post" action="{{ url_for('admin_retry') }}">
+        <input type="hidden" name="id" value="{{ s['id'] }}">
+        <button type="submit">Retry Slack post</button>
+      </form>
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Pending ({{ pending|length }})</h2>
+    {% if not pending %}
+    <p>Nothing to review.</p>
+    {% endif %}
+    {% for s in pending %}
+    <article class="card">
+      <p class="meta">{{ s['category'] }}</p>
+      <p class="content">{{ s['content'] }}</p>
+      <div class="actions">
+        <form method="post" action="{{ url_for('admin_approve') }}">
+          <input type="hidden" name="id" value="{{ s['id'] }}">
+          <button type="submit" class="approve">Approve &amp; post</button>
+        </form>
+        <form method="post" action="{{ url_for('admin_deny') }}" class="deny-form">
+          <input type="hidden" name="id" value="{{ s['id'] }}">
+          <input type="text" name="reason" maxlength="200" placeholder="Reason (optional, for your records)">
+          <button type="submit" class="deny">Deny</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+</main>
+</body>
+</html>

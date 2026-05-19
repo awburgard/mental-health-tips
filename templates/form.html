@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Share a mental health tip — anonymous</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>Share a mental health tip</h1>
+  <p class="lead">
+    Your tip will be reviewed and, if approved, posted anonymously to our Slack channel.
+    No one — not HR, not engineers, not me — can tell who wrote it.
+  </p>
+
+  <section class="promise">
+    <h2>What this page does and doesn't do</h2>
+    <ul>
+      <li><strong>Does not</strong> ask for your name, email, or any identifier.</li>
+      <li><strong>Does not</strong> set cookies, run analytics, or load anything from outside this server.</li>
+      <li><strong>Does not</strong> log your IP address in this app, or store anything that could link the tip to you.</li>
+      <li><strong>Does</strong> save: the tip text, the category, and a timestamp rounded to the hour.</li>
+      <li><strong>Cannot edit or delete</strong> your tip after you submit — we have no way to know which one is yours.</li>
+    </ul>
+    <p class="caveat">
+      Honest caveat: our hosting provider sees standard web request metadata
+      (including your IP) for a short retention window, the same as any website
+      you visit. Our app never reads or stores it. Source code is open so you
+      can verify.
+    </p>
+  </section>
+
+  <section class="disclaimer">
+    <h2>Before you submit — please read</h2>
+    <p>
+      This form is not monitored for HR, legal, or emergency support, and it
+      is not a substitute for professional medical or mental health care.
+    </p>
+    <p>
+      If you have a workplace concern, please reach out directly to your
+      manager or HR so we can address it through the proper channels.
+    </p>
+    <p>
+      If you are experiencing a mental health crisis or urgent safety issue,
+      please contact emergency services (911) or a crisis resource such as
+      the <strong>988 Suicide &amp; Crisis Lifeline</strong> (call or text
+      988) or other local emergency/mental health services.
+    </p>
+    <p>
+      While this space isn't intended for reporting issues, if something is
+      shared here that indicates harassment, discrimination, safety
+      concerns, or risk of harm, we may still need to follow up through our
+      normal HR and safety processes.
+    </p>
+    <p>Thanks for keeping this a respectful and supportive space.</p>
+  </section>
+
+  {% if error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('submit') }}" autocomplete="off">
+    <label for="category">Category</label>
+    <select id="category" name="category" required>
+      <option value="" disabled selected>Pick one…</option>
+      {% for c in categories %}
+      <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="content">Your tip</label>
+    <textarea
+      id="content"
+      name="content"
+      required
+      maxlength="{{ max_len }}"
+      rows="8"
+      placeholder="Something that's helped you with stress, burnout, sleep, balance, or general wellbeing. Avoid details that identify your team or role."
+    ></textarea>
+    <p class="charcount"><span id="count">0</span> / {{ max_len }}</p>
+
+    <button type="submit">Submit anonymously</button>
+  </form>
+</main>
+<script>
+  // No tracking. Just a character counter.
+  const ta = document.getElementById('content');
+  const cc = document.getElementById('count');
+  ta.addEventListener('input', () => { cc.textContent = ta.value.length; });
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Thanks</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>Thank you.</h1>
+  <p>Your tip has been received. It will be reviewed and, if approved, posted anonymously to Slack.</p>
+  <p>We didn't store anything that links the submission to you, including any submission ID we could read back to you — so we can't show you a "status." That's intentional.</p>
+  <p><a href="{{ url_for('form') }}">Submit another</a></p>
+</main>
+</body>
+</html>

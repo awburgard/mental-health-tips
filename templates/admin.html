@@ -60,7 +60,10 @@
     <p>Nothing to review.</p>
     {% endif %}
     {% for s in pending %}
-    <article class="card">
+    <article class="card {% if s['flagged'] %}flagged{% endif %}">
+      {% if s['flagged'] %}
+      <p class="flag-banner">Flagged by automated review — read carefully before approving.</p>
+      {% endif %}
       <p class="content">{{ s['content'] }}</p>
       <div class="actions">
         <form method="post" action="{{ url_for('admin_approve') }}">

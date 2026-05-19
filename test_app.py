@@ -27,6 +27,11 @@ def client(tmp_path, monkeypatch):
     import app as app_module
     importlib.reload(app_module)
     app_module.app.config["TESTING"] = True
+    # Default to passing moderation in tests; individual tests override.
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda text: {"block": False, "flag": False, "reasons": []},
+    )
     with app_module.app.test_client() as c:
         # Unlock the site for every test that uses this fixture; the gate
         # itself is exercised in dedicated tests below.
@@ -256,6 +261,56 @@ def test_admin_reset_token_can_only_be_used_once(client, monkeypatch):
         data={"token": token, "password": "SecondAttempt2!", "confirm": "SecondAttempt2!"},
     )
     assert second.status_code == 400  # token already used
+
+
+def test_moderation_block_rejects_submission(client, monkeypatch):
+    c, app_module, db_path = client
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda t: {"block": True, "flag": False, "reasons": ["hate_speech"]},
+    )
+    resp = c.post("/submit", data={"content": "anything"})
+    assert resp.status_code == 400
+    # Generic message — must not reveal which rule fired.
+    body = resp.get_data(as_text=True)
+    assert "hate_speech" not in body
+    assert "able to accept" in body  # apostrophe gets HTML-escaped in template
+    # And nothing got written to the DB.
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+    conn.close()
+    assert rows == 0
+
+
+def test_moderation_flag_saves_with_flag(client, monkeypatch):
+    c, app_module, db_path = client
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda t: {"block": False, "flag": True, "reasons": ["self_harm"]},
+    )
+    resp = c.post("/submit", data={"content": "i used to struggle with X and what helped was Y"})
+    assert resp.status_code in (302, 303)
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT flagged FROM submissions").fetchone()
+    conn.close()
+    assert row[0] == 1
+
+
+def test_moderation_failure_fails_open(client, monkeypatch):
+    """When moderation fails (API down, parse error), submissions go through."""
+    c, app_module, db_path = client
+    # The real moderate_submission catches exceptions internally — verify the
+    # contract that the resulting "all-False" return passes through.
+    monkeypatch.setattr(
+        app_module, "moderate_submission",
+        lambda t: {"block": False, "flag": False, "reasons": []},
+    )
+    resp = c.post("/submit", data={"content": "innocuous tip"})
+    assert resp.status_code in (302, 303)
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT flagged FROM submissions").fetchone()
+    conn.close()
+    assert row[0] == 0
 
 
 def test_admin_reset_hidden_when_email_not_configured(locked_client, monkeypatch):

@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     reviewed_at   INTEGER,                      -- unix seconds, rounded to the hour
     deny_reason   TEXT,                         -- optional reviewer note (denied only)
     slack_posted  INTEGER NOT NULL DEFAULT 0,   -- 0/1; only set after successful post
-    slack_ts      TEXT                          -- Slack message id (ts); needed for delete
+    slack_ts      TEXT,                         -- Slack message id (ts); needed for delete
+    flagged       INTEGER NOT NULL DEFAULT 0    -- 0/1; pre-submission moderation flag
 );
 
 CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);

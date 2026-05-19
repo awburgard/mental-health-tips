@@ -18,6 +18,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from typing import List
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
@@ -50,6 +51,12 @@ MAX_CONTENT_LEN = 2000
 
 APPROVED_PURGE_DAYS = int(os.environ.get("APPROVED_PURGE_DAYS", "30"))
 DENIED_PURGE_DAYS = int(os.environ.get("DENIED_PURGE_DAYS", "7"))
+
+# Pre-submission content moderation (Claude API). When ANTHROPIC_API_KEY is
+# empty the moderation check is skipped entirely and submissions pass straight
+# to the HR review queue (same behaviour as before this feature existed).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
 
 # Password-reset email (Resend). When RESEND_API_KEY is empty the reset
 # feature is hidden from the UI and the endpoints no-op.
@@ -110,6 +117,9 @@ def init_db() -> None:
         # Defensive migration: add slack_ts to any pre-existing DB that lacks it.
         if "slack_ts" not in cols:
             conn.execute("ALTER TABLE submissions ADD COLUMN slack_ts TEXT")
+        # Defensive migration: add flagged column (added with moderation feature).
+        if "flagged" not in cols:
+            conn.execute("ALTER TABLE submissions ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
         # Defensive migration: drop the legacy category column if it exists.
         # SQLite >= 3.35 supports DROP COLUMN directly; older falls back to
         # a table rebuild.
@@ -252,6 +262,112 @@ def send_reset_email(token: str) -> tuple:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ---------- Pre-submission content moderation (Claude API) ----------
+#
+# The form is anonymous and HR-moderated. Moderation here is a pre-filter for
+# obvious abuse so HR doesn't see slurs, threats, doxxing, or sexual content.
+# It is intentionally "fail open" — if the API errors or the key is missing,
+# submissions pass through to HR review unchanged. HR moderation is the
+# safety net; the model is the first pass.
+
+import anthropic
+from pydantic import BaseModel
+
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if not ANTHROPIC_API_KEY:
+        return None
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
+MODERATION_SYSTEM_PROMPT = """\
+You are a content moderator for an anonymous mental health tips submission form at a workplace. Each submission is meant to be a tip, idea, or practice that has helped someone with stress, burnout, work-life balance, sleep, or general wellbeing — to be reviewed by HR and posted anonymously to a Slack channel.
+
+Classify the submission against the following categories. Set a field to true if and ONLY if the submission contains content matching that category. Be precise — do not flag a tip simply because it mentions difficult emotions. Be especially careful: identity, religion, or demographic mentions in a positive or neutral context are NOT hate speech. Only flag hate_speech when the submission expresses hostility, slurs, or advocates discrimination toward a protected group. Tips about meditation, therapy, boundaries, journaling, exercise, faith practices, coming out, etc. should NOT trigger any category.
+
+BLOCK categories (auto-rejected before HR sees them):
+- hate_speech: hostility, slurs, or advocacy of discrimination toward a protected class (race, ethnicity, national origin, religion, sex, gender identity, sexual orientation, age, disability, pregnancy/family status, veteran status, genetic info).
+- targeted_harassment: insults, intimidation, or attacks aimed at a named or identifiable individual.
+- sexual_content: adult content, sexually suggestive material, or sexual references to coworkers. (Statements of identity like "as a lesbian I..." are NOT sexual content.)
+- threats_violence: direct threats, advocacy of violence, or descriptions of attacks.
+- doxxing: naming coworkers, sharing emails/addresses/phone numbers, or distinctive identifying descriptions of specific individuals.
+- illegal_advocacy: advocating illegal activities (drug use at work, theft, fraud, etc.).
+
+FLAG categories (saved, but HR sees a warning):
+- self_harm: content describing self-harm behaviors, suicidal ideation, or similar. A tip about recovery FROM such struggles is valuable; flag so HR can review the framing.
+- self_identifying: the submitter discloses something that could identify them (unique role/team references such as "as the only X on team Y").
+- workplace_grievance: reads as a complaint about a specific person, team, or policy rather than a wellbeing tip.
+
+When in doubt, do NOT flag. The downside of a false flag is wasted HR attention; the downside of over-blocking is a chilled submission space. A submission about an ordinary wellbeing practice should classify with every field set to false."""
+
+
+class ModerationResult(BaseModel):
+    hate_speech: bool
+    targeted_harassment: bool
+    sexual_content: bool
+    threats_violence: bool
+    doxxing: bool
+    illegal_advocacy: bool
+    self_harm: bool
+    self_identifying: bool
+    workplace_grievance: bool
+
+
+_BLOCK_CATEGORIES = (
+    "hate_speech", "targeted_harassment", "sexual_content",
+    "threats_violence", "doxxing", "illegal_advocacy",
+)
+_FLAG_CATEGORIES = ("self_harm", "self_identifying", "workplace_grievance")
+
+
+def moderate_submission(text: str) -> dict:
+    """Classify a submission. Returns a dict:
+        block (bool)   - reject before HR
+        flag  (bool)   - save, warn HR
+        reasons (list) - category names that triggered
+
+    Fails OPEN — on missing key, API error, or parse failure, returns
+    {block: False, flag: False, reasons: []} so legitimate submissions are
+    not silently dropped when the upstream service is unhappy. HR review is
+    the safety net.
+    """
+    client = _get_anthropic_client()
+    if client is None:
+        return {"block": False, "flag": False, "reasons": []}
+    try:
+        response = client.messages.parse(
+            model=ANTHROPIC_MODEL,
+            max_tokens=512,
+            system=[{
+                "type": "text",
+                "text": MODERATION_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"Classify this submission:\n\n<<<\n{text}\n>>>",
+            }],
+            output_format=ModerationResult,
+        )
+        result = response.parsed_output
+    except Exception as e:
+        log_event("moderation_api_error", error=type(e).__name__)
+        return {"block": False, "flag": False, "reasons": []}
+
+    block_hits: List[str] = [c for c in _BLOCK_CATEGORIES if getattr(result, c)]
+    flag_hits: List[str] = [c for c in _FLAG_CATEGORIES if getattr(result, c)]
+    return {
+        "block": bool(block_hits),
+        "flag": bool(flag_hits),
+        "reasons": block_hits + flag_hits,
+    }
 
 
 # ---------- Slack ----------
@@ -429,14 +545,27 @@ def submit():
     # Strip non-printable characters defensively (paste hygiene).
     clean = "".join(ch for ch in content if ch == "\n" or ch == "\t" or ch.isprintable())
 
+    mod = moderate_submission(clean)
+    if mod["block"]:
+        log_event("submission_blocked", reasons=",".join(mod["reasons"]))
+        return render_template(
+            "form.html",
+            max_len=MAX_CONTENT_LEN,
+            error="We weren't able to accept that submission. Please review the guidance above and try again.",
+        ), 400
+
     db = get_db()
     db.execute(
-        "INSERT INTO submissions (id, content, status, created_at) "
-        "VALUES (?, ?, 'pending', ?)",
-        (new_id(), clean, now_hour()),
+        "INSERT INTO submissions (id, content, status, created_at, flagged) "
+        "VALUES (?, ?, 'pending', ?, ?)",
+        (new_id(), clean, now_hour(), 1 if mod["flag"] else 0),
     )
     db.commit()
-    log_event("submission_received", length=len(clean))
+    if mod["flag"]:
+        log_event("submission_received", length=len(clean), flagged=True,
+                  reasons=",".join(mod["reasons"]))
+    else:
+        log_event("submission_received", length=len(clean))
     return redirect(url_for("thanks"))
 
 
@@ -587,7 +716,7 @@ def admin_logout():
 def admin():
     db = get_db()
     pending = db.execute(
-        "SELECT id, content, created_at FROM submissions "
+        "SELECT id, content, created_at, flagged FROM submissions "
         "WHERE status = 'pending'"
     ).fetchall()
     pending = list(pending)

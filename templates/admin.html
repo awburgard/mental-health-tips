@@ -36,6 +36,27 @@
   </section>
   {% endif %}
 
+  {% if posted %}
+  <section class="posted">
+    <h2>Recently posted ({{ posted|length }})</h2>
+    <p class="lead" style="font-size:0.9rem">
+      Approved tips still in the DB. Deleting here removes the message from
+      Slack and wipes the row. Older approved tips auto-purge after 30 days.
+    </p>
+    {% for s in posted %}
+    <article class="card">
+      <p class="meta">{{ s['category'] }}</p>
+      <p class="content">{{ s['content'] }}</p>
+      <form method="post" action="{{ url_for('admin_delete_post') }}"
+            onsubmit="return confirm('Delete this message from Slack and wipe the record? This cannot be undone.');">
+        <input type="hidden" name="id" value="{{ s['id'] }}">
+        <button type="submit" class="deny">Delete from Slack</button>
+      </form>
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   <section>
     <h2>Pending ({{ pending|length }})</h2>
     {% if not pending %}

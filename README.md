@@ -22,8 +22,9 @@ here is the code."
   the character counter.
 - Approved submissions are purged from the DB 30 days after they post to Slack.
   Denied submissions purge after 7 days. (Both windows are configurable.)
-- The Slack integration uses an **incoming webhook**, not a bot. It can post to
-  one channel and nothing else. It has no read permissions.
+- The Slack integration uses a **bot token** with only the `chat:write` scope.
+  The bot can post to channels it's been invited to and can delete its own
+  messages. It cannot read message history, list users, or do anything else.
 
 ## What we can't promise
 
@@ -53,7 +54,10 @@ here is the code."
 - **Backend:** Flask (Python 3.12), single `app.py`.
 - **Database:** SQLite, single file on a Fly.io persistent volume.
 - **Hosting:** Fly.io, single small VM, gunicorn behind Fly's edge.
-- **Slack:** Incoming webhook URL stored in `SLACK_WEBHOOK_URL` env var.
+- **Slack:** Bot user token (`SLACK_BOT_TOKEN`) + target channel id
+  (`SLACK_CHANNEL_ID`). Bot scope is `chat:write` only. The token lets the
+  app both post and delete its own messages — needed so HR can pull a post
+  back down without depending on a Slack workspace admin.
 - **Admin auth:** HTTP Basic with a single shared password (`ADMIN_PASSWORD`).
   For 1–3 reviewers sharing the password is appropriate; no third-party identity
   provider is involved.
@@ -106,8 +110,10 @@ fly launch --no-deploy
 fly volumes create tips_data --size 1 --region <your-region>
 
 fly secrets set \
-  SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." \
+  SLACK_BOT_TOKEN="xoxb-..." \
+  SLACK_CHANNEL_ID="C0XXXXXXXXX" \
   ADMIN_PASSWORD="<your generated password>" \
+  FLASK_SECRET_KEY="<your generated key>" \
   ALLOWED_ORIGIN="https://<your-app>.fly.dev"
 
 fly deploy
@@ -141,7 +147,7 @@ but the surface above (our app) is fully ours.
 | Timing correlation by HR reviewer | `created_at` rounded to hour; queue shuffled |
 | CSRF on the public form | `Origin` header check; no cookies/sessions to forge |
 | CSRF on admin actions | `Origin` header check; basic auth + same-origin form |
-| Slack webhook over-scoped | Incoming webhook can only post to one channel |
+| Slack bot over-scoped | Only scope is `chat:write`; bot can only post + delete its own messages in channels it's invited to |
 | Submissions lingering | 30-day / 7-day purge cron |
 | Reviewer wants to edit a tip | Not possible — approve as-written or deny. Editing without submitter consent would break the anonymity contract. |
 | Crisis content | Reviewer can deny; every approved post auto-appends a crisis-resources footer with 988 and an EAP pointer. |

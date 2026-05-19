@@ -44,7 +44,7 @@ def test_schema_has_no_pii_columns(client):
 
 def test_submission_stores_only_expected_fields(client):
     c, app_module, db_path = client
-    with patch.object(app_module, "post_to_slack", return_value=(True, "ok")):
+    with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "1.0")):
         resp = c.post("/submit", data={"content": "drink water", "category": "General"})
     assert resp.status_code in (302, 303)
 
@@ -76,7 +76,7 @@ def test_admin_login_rejects_wrong_password(client):
 
 def test_admin_can_approve_and_post(client):
     c, app_module, db_path = client
-    with patch.object(app_module, "post_to_slack", return_value=(True, "ok")) as p:
+    with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "1234.5678")) as p:
         c.post("/submit", data={"content": "go for a walk", "category": "Stress"})
         conn = sqlite3.connect(db_path)
         sub_id = conn.execute("SELECT id FROM submissions").fetchone()[0]
@@ -92,6 +92,35 @@ def test_admin_can_approve_and_post(client):
         args, _kw = p.call_args
         assert args[0] == "go for a walk"
         assert args[1] == "Stress"
+
+        # Slack ts is stored so we can delete the message later.
+        conn = sqlite3.connect(db_path)
+        ts = conn.execute("SELECT slack_ts FROM submissions WHERE id=?", (sub_id,)).fetchone()[0]
+        conn.close()
+        assert ts == "1234.5678"
+
+
+def test_admin_can_delete_posted_message(client):
+    c, app_module, db_path = client
+    with patch.object(app_module, "post_to_slack", return_value=(True, "ok", "9876.5432")), \
+         patch.object(app_module, "delete_slack_message", return_value=(True, "ok")) as d:
+        c.post("/submit", data={"content": "stretch", "category": "General"})
+        conn = sqlite3.connect(db_path)
+        sub_id = conn.execute("SELECT id FROM submissions").fetchone()[0]
+        conn.close()
+
+        c.post("/admin/login", data={"password": "test-password"})
+        c.post("/admin/approve", data={"id": sub_id})
+        resp = c.post("/admin/delete-post", data={"id": sub_id})
+        assert resp.status_code in (302, 303)
+
+        d.assert_called_once_with("9876.5432")
+
+        # Row wiped after successful Slack delete.
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT * FROM submissions WHERE id=?", (sub_id,)).fetchone()
+        conn.close()
+        assert row is None
 
 
 def test_denied_submission_keeps_no_identifying_data(client):

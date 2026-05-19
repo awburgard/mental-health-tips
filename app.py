@@ -40,7 +40,8 @@ load_dotenv()
 # ---------- Config ----------
 
 DB_PATH = os.environ.get("DB_PATH", "tips.db")
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "")  # e.g. https://tips.example.com
@@ -95,6 +96,10 @@ def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.executescript(schema.read_text())
+        # Defensive migration: add slack_ts to any pre-existing DB that lacks it.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(submissions)")]
+        if "slack_ts" not in cols:
+            conn.execute("ALTER TABLE submissions ADD COLUMN slack_ts TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -126,20 +131,53 @@ def new_id() -> str:
 # ---------- Slack ----------
 
 
-def post_to_slack(text: str, category: str) -> tuple[bool, str]:
-    if not SLACK_WEBHOOK_URL:
-        return False, "SLACK_WEBHOOK_URL not configured"
-    body = {
-        "text": f"*Anonymous tip — {category}*\n>>> {text}",
-        "mrkdwn": True,
-    }
+SLACK_API = "https://slack.com/api"
+
+
+def _slack_call(method: str, payload: dict) -> tuple[bool, str, dict]:
+    """Common Slack Web API caller. Returns (ok, detail, raw_response_json)."""
+    if not SLACK_BOT_TOKEN or not SLACK_CHANNEL_ID:
+        return False, "Slack bot token / channel id not configured", {}
     try:
-        resp = requests.post(SLACK_WEBHOOK_URL, json=body, timeout=10)
+        resp = requests.post(
+            f"{SLACK_API}/{method}",
+            headers={
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=payload,
+            timeout=10,
+        )
     except requests.RequestException as e:
-        return False, f"network: {type(e).__name__}"
+        return False, f"network: {type(e).__name__}", {}
     if resp.status_code != 200:
-        return False, f"http {resp.status_code}"
-    return True, "ok"
+        return False, f"http {resp.status_code}", {}
+    data = resp.json()
+    if not data.get("ok"):
+        return False, f"slack: {data.get('error', 'unknown')}", data
+    return True, "ok", data
+
+
+def post_to_slack(text: str, category: str):
+    """Post a tip to Slack. Returns (ok: bool, detail: str, slack_ts: str | None)."""
+    ok, detail, data = _slack_call(
+        "chat.postMessage",
+        {
+            "channel": SLACK_CHANNEL_ID,
+            "text": f"*Anonymous tip — {category}*\n>>> {text}",
+            "mrkdwn": True,
+        },
+    )
+    return ok, detail, data.get("ts") if ok else None
+
+
+def delete_slack_message(slack_ts: str) -> tuple[bool, str]:
+    """Delete a previously-posted tip. Returns (ok, detail)."""
+    ok, detail, _ = _slack_call(
+        "chat.delete",
+        {"channel": SLACK_CHANNEL_ID, "ts": slack_ts},
+    )
+    return ok, detail
 
 
 # ---------- Origin guard ----------
@@ -276,10 +314,17 @@ def admin():
         "WHERE status = 'approved' AND slack_posted = 0"
     ).fetchall()
 
+    posted = db.execute(
+        "SELECT id, content, category, reviewed_at FROM submissions "
+        "WHERE status = 'approved' AND slack_posted = 1 AND slack_ts IS NOT NULL "
+        "ORDER BY reviewed_at DESC"
+    ).fetchall()
+
     return render_template(
         "admin.html",
         pending=pending,
         failed=failed,
+        posted=posted,
     )
 
 
@@ -297,11 +342,11 @@ def admin_approve():
     if not row:
         return redirect(url_for("admin"))
 
-    ok, detail = post_to_slack(row["content"], row["category"])
+    ok, detail, ts = post_to_slack(row["content"], row["category"])
     db.execute(
-        "UPDATE submissions SET status='approved', reviewed_at=?, slack_posted=? "
+        "UPDATE submissions SET status='approved', reviewed_at=?, slack_posted=?, slack_ts=? "
         "WHERE id = ?",
-        (now_hour(), 1 if ok else 0, sub_id),
+        (now_hour(), 1 if ok else 0, ts, sub_id),
     )
     db.commit()
     log_event("review_completed", action="approved", slack_ok=ok, detail=detail)
@@ -323,14 +368,39 @@ def admin_retry():
     if not row:
         return redirect(url_for("admin"))
 
-    ok, detail = post_to_slack(row["content"], row["category"])
+    ok, detail, ts = post_to_slack(row["content"], row["category"])
     if ok:
         db.execute(
-            "UPDATE submissions SET slack_posted=1 WHERE id = ?",
-            (sub_id,),
+            "UPDATE submissions SET slack_posted=1, slack_ts=? WHERE id = ?",
+            (ts, sub_id),
         )
         db.commit()
     log_event("slack_retry", slack_ok=ok, detail=detail)
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/delete-post", methods=["POST"])
+@require_admin
+def admin_delete_post():
+    if not origin_ok(request):
+        abort(403)
+    sub_id = request.form.get("id", "")
+    db = get_db()
+    row = db.execute(
+        "SELECT slack_ts FROM submissions "
+        "WHERE id = ? AND status = 'approved' AND slack_posted = 1",
+        (sub_id,),
+    ).fetchone()
+    if not row or not row["slack_ts"]:
+        return redirect(url_for("admin"))
+
+    ok, detail = delete_slack_message(row["slack_ts"])
+    if ok:
+        # On successful Slack delete we wipe the row entirely — the post is gone,
+        # there's no reason to retain content waiting for the scheduled purge.
+        db.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
+        db.commit()
+    log_event("slack_delete", slack_ok=ok, detail=detail)
     return redirect(url_for("admin"))
 
 

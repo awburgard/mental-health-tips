@@ -56,7 +56,7 @@ DENIED_PURGE_DAYS = int(os.environ.get("DENIED_PURGE_DAYS", "7"))
 # empty the moderation check is skipped entirely and submissions pass straight
 # to the HR review queue (same behaviour as before this feature existed).
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
 
 # Password-reset email (Resend). When RESEND_API_KEY is empty the reset
 # feature is hidden from the UI and the endpoints no-op.

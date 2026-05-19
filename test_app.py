@@ -12,6 +12,7 @@ import pytest
 
 # Configure env BEFORE importing the app module.
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
+os.environ.setdefault("SITE_PASSWORD", "test-site-password")
 os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-key-not-for-prod")
 os.environ.setdefault("ALLOWED_ORIGIN", "")
 os.environ.setdefault("ENABLE_SCHEDULER", "0")  # don't start APScheduler in tests
@@ -22,6 +23,22 @@ def client(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     # Re-import the module so it picks up the new DB_PATH.
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    app_module.app.config["TESTING"] = True
+    with app_module.app.test_client() as c:
+        # Unlock the site for every test that uses this fixture; the gate
+        # itself is exercised in dedicated tests below.
+        c.post("/unlock", data={"password": "test-site-password"})
+        yield c, app_module, str(db_path)
+
+
+@pytest.fixture
+def locked_client(tmp_path, monkeypatch):
+    """Like `client` but without an unlocked session — for gate tests."""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
     import importlib
     import app as app_module
     importlib.reload(app_module)
@@ -137,3 +154,39 @@ def test_denied_submission_keeps_no_identifying_data(client):
     conn.close()
     assert row[0] == "denied"
     assert row[1] == "duplicate"
+
+
+def test_gate_redirects_unlocked_visitor(locked_client):
+    c, _, _ = locked_client
+    resp = c.get("/")
+    assert resp.status_code in (302, 303)
+    assert "/unlock" in resp.headers["Location"]
+
+
+def test_gate_blocks_submit_without_unlock(locked_client):
+    c, _, db_path = locked_client
+    resp = c.post("/submit", data={"content": "should not be saved"})
+    assert resp.status_code in (302, 303)
+    assert "/unlock" in resp.headers["Location"]
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+    conn.close()
+    assert rows == 0, "submission should NOT have been written"
+
+
+def test_gate_rejects_wrong_code(locked_client):
+    c, _, _ = locked_client
+    resp = c.post("/unlock", data={"password": "nope"})
+    assert resp.status_code == 401
+
+
+def test_gate_admin_login_also_gated(locked_client):
+    c, _, _ = locked_client
+    resp = c.get("/admin/login")
+    assert resp.status_code in (302, 303)
+    assert "/unlock" in resp.headers["Location"]
+
+
+def test_healthz_bypasses_gate(locked_client):
+    c, _, _ = locked_client
+    assert c.get("/healthz").status_code == 200

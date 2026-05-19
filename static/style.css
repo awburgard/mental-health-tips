@@ -53,6 +53,7 @@ h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
 }
 label { display: block; font-weight: 600; margin: 1rem 0 0.25rem; }
 .field-hint { color: var(--muted); margin: 0 0 0.5rem; font-size: 0.95rem; }
+.button-row { margin-top: 1rem; }
 select, textarea, input[type="text"] {
   width: 100%;
   font: inherit;

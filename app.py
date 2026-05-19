@@ -41,6 +41,7 @@ load_dotenv()
 DB_PATH = os.environ.get("DB_PATH", "tips.db")
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "")
+SITE_PASSWORD = os.environ.get("SITE_PASSWORD", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "")  # e.g. https://tips.example.com
@@ -51,6 +52,8 @@ DENIED_PURGE_DAYS = int(os.environ.get("DENIED_PURGE_DAYS", "7"))
 
 if not ADMIN_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD env var is required")
+if not SITE_PASSWORD:
+    raise RuntimeError("SITE_PASSWORD env var is required (gates the whole site)")
 if not FLASK_SECRET_KEY:
     raise RuntimeError("FLASK_SECRET_KEY env var is required (used to sign admin session cookies)")
 
@@ -254,10 +257,35 @@ app.config.update(
 app.teardown_appcontext(close_db)
 
 
+# ---------- Site-wide access gate ----------
+#
+# Everything except /unlock, /healthz and static assets is server-side gated
+# behind SITE_PASSWORD. A user without an unlocked session never receives the
+# form HTML — so clearing cookies or "removing the gate" in DevTools just
+# bounces them back to /unlock. The unlock state lives in the signed session
+# cookie (HttpOnly, Secure in prod, SameSite=Strict).
+
+_GATE_EXEMPT_PATHS = {"/unlock", "/healthz"}
+
+
+@app.before_request
+def _gate_site():
+    p = request.path
+    if p in _GATE_EXEMPT_PATHS or p.startswith("/static/"):
+        return None
+    if not session.get("unlocked"):
+        return redirect(url_for("unlock", next=p))
+    return None
+
+
 @app.after_request
 def add_security_headers(resp):
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Content-Type-Options"] = "nosniff"
+    # Stop the browser from caching gated pages — back-button shouldn't be
+    # able to resurrect the form view after the user clears their session.
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
@@ -321,12 +349,30 @@ def thanks():
     return render_template("thanks.html")
 
 
+@app.route("/unlock", methods=["GET", "POST"])
+def unlock():
+    # Only honor `next` if it is a relative path on our own origin.
+    raw_next = request.args.get("next") or request.form.get("next") or "/"
+    next_path = raw_next if raw_next.startswith("/") and not raw_next.startswith("//") else "/"
+
+    if request.method == "POST":
+        password = request.form.get("password") or ""
+        if hmac.compare_digest(password, SITE_PASSWORD):
+            session["unlocked"] = True
+            return redirect(next_path)
+        return render_template("unlock.html", next=next_path, error="Incorrect access code."), 401
+    return render_template("unlock.html", next=next_path)
+
+
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "POST":
         password = request.form.get("password") or ""
         if hmac.compare_digest(password, ADMIN_PASSWORD):
+            # Rotate session (defense against fixation) but keep the unlock
+            # flag — they had to be unlocked to even reach this page.
             session.clear()
+            session["unlocked"] = True
             session["admin"] = True
             return redirect(url_for("admin"))
         return render_template("login.html", error="Incorrect password."), 401
@@ -335,7 +381,9 @@ def admin_login():
 
 @app.route("/admin/logout", methods=["POST"])
 def admin_logout():
-    session.clear()
+    # Only drop the admin flag. The site unlock stays so they don't have to
+    # re-enter the access code just to use the form.
+    session.pop("admin", None)
     return redirect(url_for("admin_login"))
 
 

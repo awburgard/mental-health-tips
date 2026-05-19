@@ -7,12 +7,12 @@
 <title>Review queue</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-page="admin">
 <main>
-  <header style="display:flex; justify-content:space-between; align-items:baseline">
+  <header class="admin-header">
     <h1>Review queue</h1>
-    <form method="post" action="{{ url_for('admin_logout') }}" style="margin:0">
-      <button type="submit" class="deny" style="padding:0.3rem 0.7rem; font-size:0.85rem">Sign out</button>
+    <form method="post" action="{{ url_for('admin_logout') }}">
+      <button type="submit" class="deny signout-btn">Sign out</button>
     </form>
   </header>
   <p class="lead">
@@ -39,7 +39,7 @@
   {% if posted %}
   <section class="posted">
     <h2>Recently posted ({{ posted|length }})</h2>
-    <p class="lead" style="font-size:0.9rem">
+    <p class="lead posted-hint">
       Approved tips still in the DB. Deleting here removes the message from
       Slack and wipes the row. Older approved tips auto-purge after 30 days.
     </p>
@@ -47,8 +47,7 @@
     <article class="card">
       <p class="meta">{{ s['category'] }}</p>
       <p class="content">{{ s['content'] }}</p>
-      <form method="post" action="{{ url_for('admin_delete_post') }}"
-            onsubmit="return confirm('Delete this message from Slack and wipe the record? This cannot be undone.');">
+      <form method="post" action="{{ url_for('admin_delete_post') }}" class="confirm-delete">
         <input type="hidden" name="id" value="{{ s['id'] }}">
         <button type="submit" class="deny">Delete from Slack</button>
       </form>
@@ -81,5 +80,6 @@
     {% endfor %}
   </section>
 </main>
+<script src="{{ url_for('static', filename='admin.js') }}"></script>
 </body>
 </html>

@@ -85,11 +85,6 @@
     <button type="submit">Submit anonymously</button>
   </form>
 </main>
-<script>
-  // No tracking. Just a character counter.
-  const ta = document.getElementById('content');
-  const cc = document.getElementById('count');
-  ta.addEventListener('input', () => { cc.textContent = ta.value.length; });
-</script>
+<script src="{{ url_for('static', filename='form.js') }}"></script>
 </body>
 </html>

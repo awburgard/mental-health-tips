@@ -93,3 +93,7 @@ button.approve { background: var(--accent); }
 .actions form { display: flex; gap: 0.5rem; align-items: center; margin: 0; }
 .deny-form input[type="text"] { width: 240px; }
 .failed { border-left: 3px solid var(--warn); padding-left: 0.75rem; }
+.admin-header { display: flex; justify-content: space-between; align-items: baseline; }
+.admin-header form { margin: 0; }
+.signout-btn { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+.posted-hint { font-size: 0.9rem; }

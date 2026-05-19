@@ -26,7 +26,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask import (
     Flask,
-    abort,
     g,
     redirect,
     render_template,
@@ -159,13 +158,25 @@ def _slack_call(method: str, payload: dict) -> tuple[bool, str, dict]:
 
 
 def post_to_slack(text: str, category: str):
-    """Post a tip to Slack. Returns (ok: bool, detail: str, slack_ts: str | None)."""
+    """Post a tip to Slack. Returns (ok: bool, detail: str, slack_ts: str | None).
+
+    We use Block Kit with plain_text blocks so anything the submitter wrote is
+    rendered literally — no markdown, no `<https://evil|click here>` style
+    fake links, no @here pings. Slack also cannot interpret stray characters
+    in user content as formatting.
+    """
+    title = f"Anonymous tip — {category}"
     ok, detail, data = _slack_call(
         "chat.postMessage",
         {
             "channel": SLACK_CHANNEL_ID,
-            "text": f"*Anonymous tip — {category}*\n>>> {text}",
-            "mrkdwn": True,
+            "blocks": [
+                {"type": "header",
+                 "text": {"type": "plain_text", "text": title[:150]}},
+                {"type": "section",
+                 "text": {"type": "plain_text", "text": text}},
+            ],
+            "text": title,  # fallback for notifications / accessibility
         },
     )
     return ok, detail, data.get("ts") if ok else None
@@ -180,18 +191,16 @@ def delete_slack_message(slack_ts: str) -> tuple[bool, str]:
     return ok, detail
 
 
-# ---------- Origin guard ----------
-
-
-def origin_ok(req) -> bool:
-    """Reject cross-site POSTs. We don't want to depend on cookies for CSRF."""
-    if not ALLOWED_ORIGIN:
-        return True  # local dev: allow
-    origin = req.headers.get("Origin") or req.headers.get("Referer", "")
-    return origin.startswith(ALLOWED_ORIGIN)
-
-
 # ---------- Admin auth (single shared password) ----------
+#
+# CSRF strategy:
+#   The admin session cookie is set with SameSite=Strict, which means the
+#   browser will not include it on any cross-site request. A malicious site
+#   that POSTs to /admin/approve from a victim's browser will hit our endpoint
+#   without the session cookie, fail the auth check, and be redirected to
+#   /admin/login. No tokens needed; the cookie attribute is the defense.
+#   We do not rely on Origin/Referer headers because some browsers and
+#   privacy-protection extensions strip them.
 
 
 def require_admin(fn):
@@ -222,10 +231,26 @@ def add_security_headers(resp):
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    resp.headers["Permissions-Policy"] = (
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+        "magnetometer=(), microphone=(), payment=(), usb=()"
+    )
+    # HSTS only when we're behind real HTTPS (i.e. deployed).
+    if ALLOWED_ORIGIN.startswith("https://"):
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Strict CSP: no inline scripts/styles, no remote loads, no <base> abuse,
+    # forms can only post to our own origin.
     resp.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self'; "
-        "connect-src 'self'; frame-ancestors 'none'"
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self'; "
+        "connect-src 'self'; "
+        "form-action 'self'; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'"
     )
     return resp
 
@@ -281,8 +306,6 @@ def thanks():
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "POST":
-        if not origin_ok(request):
-            abort(403)
         password = request.form.get("password") or ""
         if hmac.compare_digest(password, ADMIN_PASSWORD):
             session.clear()
@@ -294,8 +317,6 @@ def admin_login():
 
 @app.route("/admin/logout", methods=["POST"])
 def admin_logout():
-    if not origin_ok(request):
-        abort(403)
     session.clear()
     return redirect(url_for("admin_login"))
 
@@ -333,8 +354,6 @@ def admin():
 @app.route("/admin/approve", methods=["POST"])
 @require_admin
 def admin_approve():
-    if not origin_ok(request):
-        abort(403)
     sub_id = request.form.get("id", "")
     db = get_db()
     row = db.execute(
@@ -358,8 +377,6 @@ def admin_approve():
 @app.route("/admin/retry", methods=["POST"])
 @require_admin
 def admin_retry():
-    if not origin_ok(request):
-        abort(403)
     sub_id = request.form.get("id", "")
     db = get_db()
     row = db.execute(
@@ -384,8 +401,6 @@ def admin_retry():
 @app.route("/admin/delete-post", methods=["POST"])
 @require_admin
 def admin_delete_post():
-    if not origin_ok(request):
-        abort(403)
     sub_id = request.form.get("id", "")
     db = get_db()
     row = db.execute(
@@ -409,8 +424,6 @@ def admin_delete_post():
 @app.route("/admin/deny", methods=["POST"])
 @require_admin
 def admin_deny():
-    if not origin_ok(request):
-        abort(403)
     sub_id = request.form.get("id", "")
     reason = (request.form.get("reason") or "").strip()[:200] or None
     db = get_db()

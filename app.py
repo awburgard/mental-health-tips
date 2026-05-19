@@ -291,22 +291,27 @@ You are a content moderator for an anonymous mental health tips submission form 
 
 The channel is for content that is appropriate for a professional workplace audience. Wellbeing framing ("X helps my mental health") does NOT make otherwise-inappropriate content appropriate.
 
-Classify the submission against the following categories. Set a field to true if and ONLY if the submission contains content matching that category.
+Classify the submission against the categories below. Set a field to true if and ONLY if the submission contains content matching that category. When ANY category is true, also fill in the `explanation` field with a one-sentence reason; leave it empty otherwise.
 
 BLOCK categories (auto-rejected before HR sees them):
-- hate_speech: hostility, slurs, or advocacy of discrimination toward a protected class (race, ethnicity, national origin, religion, sex, gender identity, sexual orientation, age, disability, pregnancy/family status, veteran status, genetic info). Identity or demographic mentions in a positive or neutral context are NOT hate speech — only hostility or advocacy of discrimination toward a group is.
+- hate_speech: hostility, slurs, or advocacy of discrimination toward a protected class (race, ethnicity, national origin, religion, sex, gender identity, sexual orientation, age, disability, pregnancy/family status, veteran status, genetic info). Identity or demographic mentions in a positive or neutral context are NOT hate speech.
 - targeted_harassment: insults, intimidation, or attacks aimed at a named or identifiable individual.
-- sexual_content: ANY reference to sexual activity in this workplace channel, including positive or wellbeing-framed references. Examples that BLOCK: "sex helps my mental health", "masturbation is great for stress", "intimacy with my partner is part of my self-care", any description of one's sex life, adult or sexually suggestive material, sexual references to coworkers. Statements of sexual orientation or gender identity ("as a gay person", "as a trans woman", "coming out at work helped me feel more authentic") are NOT sexual content — those are identity, not sexual activity. The distinction is: orientation/identity = allow; sexual activity = block.
-- threats_violence: direct threats, advocacy of violence, or descriptions of attacks.
+- sexual_content: ANY reference to sexual activity in this workplace channel, including positive or wellbeing-framed references. Examples that BLOCK: "sex helps my mental health", "masturbation is great for stress", "intimacy with my partner is part of my self-care", any description of one's sex life, adult or sexually suggestive material, sexual references to coworkers. Statements of sexual orientation or gender identity ("as a gay person", "as a trans woman", "coming out at work helped me feel more authentic") are NOT sexual content — those are identity, not sexual activity.
+- threats_violence: direct threats, advocacy of violence, descriptions of attacks, or content depicting/encouraging violent crimes.
 - doxxing: naming coworkers, sharing emails/addresses/phone numbers, or distinctive identifying descriptions of specific individuals.
-- illegal_advocacy: advocating illegal activities (drug use at work, theft, fraud, etc.). Mentioning legal substances like alcohol or caffeine moderately is NOT illegal_advocacy.
+- illegal_advocacy: advocating illegal activities (drug use at work, theft, fraud, other non-violent crimes). Mentioning legal substances like alcohol or caffeine moderately is NOT illegal_advocacy.
+- child_exploitation: content that depicts child nudity, or sexualizes, encourages, excuses, or describes the abuse of children.
+- weapons: content enabling the creation or use of weapons designed for mass harm (firearms instructions, explosives, biological/chemical weapons).
+- sex_crimes: content that depicts, enables, encourages, or excuses sexual assault, predation, harassment, or other sex crimes. Distinct from sexual_content.
 
 FLAG categories (saved with a visible warning; HR reviews in context):
 - self_harm: content describing self-harm behaviors, suicidal ideation, or similar. A tip about recovery FROM such struggles can be valuable; flag so HR can review the framing.
 - self_identifying: the submitter discloses something that could identify them through role/team uniqueness (e.g. "as the only X on team Y", "speaking as our team's senior architect"). General demographic statements ("as a parent", "as someone with anxiety") that don't identify a specific person are NOT self_identifying.
 - workplace_grievance: reads as a complaint about a specific person, team, or policy rather than a wellbeing tip.
+- specialized_advice: specific medical, legal, or financial advice that should come from a licensed professional. Examples: "stop taking your medication", "sue your boss", "invest in X cryptocurrency", "skip therapy and just do Y instead". General wellbeing practices and gentle suggestions ("talking to a therapist helped me") are NOT specialized_advice.
+- misinformation: factually unfounded health, safety, or scientific claims that could mislead or harm — anti-vax claims, dangerous-diet or detox claims, pseudoscience, conspiracy theories. Personal experience phrased as personal experience ("X worked for me") is NOT misinformation.
 
-A submission about an ordinary wellbeing practice (meditation, therapy, boundaries, journaling, exercise, sleep hygiene, hydration, faith practices, time with family, hobbies, getting outdoors, coming out, identity affirmation) should classify with every field set to false.
+A submission about an ordinary wellbeing practice (meditation, therapy, boundaries, journaling, exercise, sleep hygiene, hydration, faith practices, time with family, hobbies, getting outdoors, coming out, identity affirmation) should classify with every category set to false and explanation empty.
 
 When in doubt about workplace appropriateness for a public Slack channel that everyone in the company will see, prefer to flag or block rather than allow."""
 
@@ -314,17 +319,27 @@ When in doubt about workplace appropriateness for a public Slack channel that ev
 _BLOCK_CATEGORIES = (
     "hate_speech", "targeted_harassment", "sexual_content",
     "threats_violence", "doxxing", "illegal_advocacy",
+    "child_exploitation", "weapons", "sex_crimes",
 )
-_FLAG_CATEGORIES = ("self_harm", "self_identifying", "workplace_grievance")
+_FLAG_CATEGORIES = (
+    "self_harm", "self_identifying", "workplace_grievance",
+    "specialized_advice", "misinformation",
+)
 _ALL_CATEGORIES = _BLOCK_CATEGORIES + _FLAG_CATEGORIES
 
 _CLASSIFY_TOOL = {
     "name": "classify_submission",
-    "description": "Classify the submission against the content policy. Set each field to true if the submission matches that category.",
+    "description": "Classify the submission against the content policy. Set each category field to true if the submission matches that category. Fill in `explanation` with a one-sentence reason when any category is true; leave it empty otherwise.",
     "input_schema": {
         "type": "object",
-        "required": list(_ALL_CATEGORIES),
-        "properties": {c: {"type": "boolean"} for c in _ALL_CATEGORIES},
+        "required": list(_ALL_CATEGORIES) + ["explanation"],
+        "properties": {
+            **{c: {"type": "boolean"} for c in _ALL_CATEGORIES},
+            "explanation": {
+                "type": "string",
+                "description": "One-sentence reason when any category is true; empty string otherwise.",
+            },
+        },
     },
 }
 
@@ -370,6 +385,11 @@ def moderate_submission(text: str) -> dict:
 
     block_hits: List[str] = [c for c in _BLOCK_CATEGORIES if tool_input.get(c)]
     flag_hits: List[str] = [c for c in _FLAG_CATEGORIES if tool_input.get(c)]
+    explanation = (tool_input.get("explanation") or "").strip()
+    if (block_hits or flag_hits) and explanation:
+        log_event("moderation_classified",
+                  reasons=",".join(block_hits + flag_hits),
+                  explanation=explanation.replace("\n", " ")[:300])
     return {
         "block": bool(block_hits),
         "flag": bool(flag_hits),

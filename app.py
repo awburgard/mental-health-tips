@@ -237,8 +237,10 @@ def form():
 
 @app.route("/submit", methods=["POST"])
 def submit():
-    if not origin_ok(request):
-        abort(403)
+    # No origin check here on purpose: /submit is unauthenticated, has no
+    # session, and accepts public input — there is no CSRF privilege to abuse.
+    # The origin check is kept on the authenticated /admin/* routes, where it
+    # actually defends against tricking a logged-in reviewer into acting.
     content = (request.form.get("content") or "").strip()
     category = (request.form.get("category") or "").strip()
 

@@ -2,7 +2,7 @@
 # Replace "REPLACE-ME-APP-NAME" with the name you choose during `fly launch`.
 # A 256MB shared-cpu-1x machine is plenty for this workload.
 
-app = "REPLACE-ME-APP-NAME"
+app = "anon-mental-health-tips"
 primary_region = "iad"  # change to a region near you
 
 [build]

@@ -190,3 +190,78 @@ def test_gate_admin_login_also_gated(locked_client):
 def test_healthz_bypasses_gate(locked_client):
     c, _, _ = locked_client
     assert c.get("/healthz").status_code == 200
+
+
+def test_admin_reset_flow_end_to_end(client, monkeypatch):
+    c, app_module, db_path = client
+    # Enable the reset feature for the duration of this test.
+    monkeypatch.setattr(app_module, "RESEND_API_KEY", "test-key", raising=False)
+
+    captured = {}
+    def fake_send(token):
+        captured["token"] = token
+        return True, "ok"
+    monkeypatch.setattr(app_module, "send_reset_email", fake_send)
+
+    # 1) Trigger a reset; the email helper is called with a fresh token.
+    resp = c.post("/admin/request-reset")
+    assert resp.status_code == 200
+    assert "token" in captured
+    token = captured["token"]
+
+    # 2) The reset link is exempt from the site gate — visit GET /admin/reset
+    #    from a fresh client with no unlock cookie.
+    with app_module.app.test_client() as fresh:
+        page = fresh.get(f"/admin/reset?token={token}")
+        assert page.status_code == 200
+        # 3) Submit the new password.
+        done = fresh.post(
+            "/admin/reset",
+            data={"token": token, "password": "BrandNewPwd123!", "confirm": "BrandNewPwd123!"},
+        )
+        assert done.status_code == 200
+
+    # 4) The DB now stores a hashed admin password.
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT password_hash FROM admin_credentials WHERE id = 1").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0].startswith("pbkdf2$"), "password should be stored as a PBKDF2 hash"
+
+    # 5) The new password works on /admin/login; the old env-var password does not.
+    login_new = c.post("/admin/login", data={"password": "BrandNewPwd123!"})
+    assert login_new.status_code in (302, 303)
+    c.post("/admin/logout")
+    login_old = c.post("/admin/login", data={"password": "test-password"})
+    assert login_old.status_code == 401
+
+
+def test_admin_reset_token_can_only_be_used_once(client, monkeypatch):
+    c, app_module, _ = client
+    monkeypatch.setattr(app_module, "RESEND_API_KEY", "test-key", raising=False)
+    captured = {}
+    monkeypatch.setattr(app_module, "send_reset_email",
+                        lambda t: (captured.setdefault("token", t), (True, "ok"))[1])
+
+    c.post("/admin/request-reset")
+    token = captured["token"]
+    first = c.post(
+        "/admin/reset",
+        data={"token": token, "password": "FirstAttempt1!!", "confirm": "FirstAttempt1!!"},
+    )
+    assert first.status_code == 200
+
+    second = c.post(
+        "/admin/reset",
+        data={"token": token, "password": "SecondAttempt2!", "confirm": "SecondAttempt2!"},
+    )
+    assert second.status_code == 400  # token already used
+
+
+def test_admin_reset_hidden_when_email_not_configured(locked_client, monkeypatch):
+    c, app_module, _ = locked_client
+    monkeypatch.setattr(app_module, "RESEND_API_KEY", "", raising=False)
+    # Unlock so we can see /admin/login.
+    c.post("/unlock", data={"password": "test-site-password"})
+    html = c.get("/admin/login").get_data(as_text=True)
+    assert "Reset password" not in html

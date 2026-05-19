@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Password updated</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>Password updated</h1>
+  <p class="lead">The admin password has been changed. The previous password no longer works.</p>
+  <p>You can now sign in to the review portal. You will need the site access code first if you haven't already entered it on this device.</p>
+  <p><a href="{{ url_for('admin_login') }}">Go to sign in</a></p>
+</main>
+</body>
+</html>

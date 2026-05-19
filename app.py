@@ -9,6 +9,7 @@ Privacy notes for anyone reading this file:
 - Pending submissions are shown to reviewers in random order, not by time.
 - Approved submissions purge 30 days after posting; denied submissions purge after 7 days.
 """
+import hashlib
 import hmac
 import logging
 import os
@@ -49,6 +50,14 @@ MAX_CONTENT_LEN = 2000
 
 APPROVED_PURGE_DAYS = int(os.environ.get("APPROVED_PURGE_DAYS", "30"))
 DENIED_PURGE_DAYS = int(os.environ.get("DENIED_PURGE_DAYS", "7"))
+
+# Password-reset email (Resend). When RESEND_API_KEY is empty the reset
+# feature is hidden from the UI and the endpoints no-op.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESET_EMAIL_TO = os.environ.get("RESET_EMAIL_TO", "kimberly.rascon@realworklabs.com")
+RESET_EMAIL_FROM = os.environ.get("RESET_EMAIL_FROM", "Mental Health Tips <onboarding@resend.dev>")
+RESET_TOKEN_TTL_SECONDS = 3600  # 1 hour
+RESET_MIN_PASSWORD_LEN = 12
 
 if not ADMIN_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD env var is required")
@@ -158,6 +167,93 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+# ---------- Password hashing (PBKDF2-SHA256) ----------
+
+
+def hash_password(pw: str) -> str:
+    salt = secrets.token_bytes(16)
+    iters = 200_000
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, iters)
+    return f"pbkdf2${iters}${salt.hex()}${h.hex()}"
+
+
+def verify_password(pw: str, stored: str) -> bool:
+    try:
+        algo, iters, salt_hex, hash_hex = stored.split("$")
+    except (ValueError, AttributeError):
+        return False
+    if algo != "pbkdf2":
+        return False
+    try:
+        expected = hashlib.pbkdf2_hmac(
+            "sha256", pw.encode("utf-8"), bytes.fromhex(salt_hex), int(iters)
+        )
+    except ValueError:
+        return False
+    return hmac.compare_digest(expected.hex(), hash_hex)
+
+
+def stored_admin_password_hash():
+    db = get_db()
+    row = db.execute(
+        "SELECT password_hash FROM admin_credentials WHERE id = 1"
+    ).fetchone()
+    return row["password_hash"] if row else None
+
+
+def check_admin_password(pw: str) -> bool:
+    """Prefer DB-stored hash (set via reset flow). Fall back to env var until first reset."""
+    h = stored_admin_password_hash()
+    if h:
+        return verify_password(pw, h)
+    if not ADMIN_PASSWORD:
+        return False
+    return hmac.compare_digest(pw, ADMIN_PASSWORD)
+
+
+# ---------- Reset-email transport (Resend) ----------
+
+
+def send_reset_email(token: str) -> tuple:
+    if not RESEND_API_KEY:
+        return False, "RESEND_API_KEY not configured"
+    base = ALLOWED_ORIGIN.rstrip("/") if ALLOWED_ORIGIN else "http://127.0.0.1:8000"
+    link = f"{base}/admin/reset?token={token}"
+    body = {
+        "from": RESET_EMAIL_FROM,
+        "to": [RESET_EMAIL_TO],
+        "subject": "Anonymous mental health tips — admin password reset",
+        "text": (
+            "Someone requested a reset of the admin reviewer password for the "
+            "anonymous mental health tips app.\n\n"
+            "To set a new password, click this one-time link (valid for 1 hour):\n\n"
+            f"{link}\n\n"
+            "If you didn't request this, you can ignore this email. The link "
+            "only changes anything once you click it AND submit a new "
+            "password — until then, no change is made."
+        ),
+    }
+    try:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        return False, f"network: {type(e).__name__}"
+    if resp.status_code not in (200, 202):
+        return False, f"http {resp.status_code}"
+    return True, "ok"
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 # ---------- Slack ----------
 
 
@@ -265,7 +361,7 @@ app.teardown_appcontext(close_db)
 # bounces them back to /unlock. The unlock state lives in the signed session
 # cookie (HttpOnly, Secure in prod, SameSite=Strict).
 
-_GATE_EXEMPT_PATHS = {"/unlock", "/healthz"}
+_GATE_EXEMPT_PATHS = {"/unlock", "/healthz", "/admin/reset"}
 
 
 @app.before_request
@@ -368,15 +464,114 @@ def unlock():
 def admin_login():
     if request.method == "POST":
         password = request.form.get("password") or ""
-        if hmac.compare_digest(password, ADMIN_PASSWORD):
+        if check_admin_password(password):
             # Rotate session (defense against fixation) but keep the unlock
             # flag — they had to be unlocked to even reach this page.
             session.clear()
             session["unlocked"] = True
             session["admin"] = True
             return redirect(url_for("admin"))
-        return render_template("login.html", error="Incorrect password."), 401
-    return render_template("login.html")
+        return render_template(
+            "login.html",
+            error="Incorrect password.",
+            reset_enabled=bool(RESEND_API_KEY),
+        ), 401
+    return render_template("login.html", reset_enabled=bool(RESEND_API_KEY))
+
+
+@app.route("/admin/request-reset", methods=["POST"])
+def admin_request_reset():
+    """Trigger an admin-password reset email to RESET_EMAIL_TO.
+    The visitor must be unlocked (gated by SITE_PASSWORD). To avoid leaking
+    whether a reset is already pending we always render the same confirmation
+    page regardless of whether we actually sent an email this time.
+    """
+    if not RESEND_API_KEY:
+        return render_template("reset_sent.html")
+    db = get_db()
+    now = int(time.time())
+    # Clean up expired/used tokens, then invalidate any still-active token so
+    # a fresh email superseeds the old link.
+    db.execute(
+        "DELETE FROM password_resets WHERE expires_at < ? OR used = 1",
+        (now,),
+    )
+    db.execute("UPDATE password_resets SET used = 1")
+    # Throttle: at most one new reset per 60 seconds across the whole app.
+    recent = db.execute(
+        "SELECT 1 FROM password_resets WHERE created_at > ?",
+        (now - 60,),
+    ).fetchone()
+    if recent:
+        db.commit()
+        return render_template("reset_sent.html")
+    token = secrets.token_urlsafe(32)
+    db.execute(
+        "INSERT INTO password_resets (token_hash, created_at, expires_at, used) "
+        "VALUES (?, ?, ?, 0)",
+        (_token_hash(token), now, now + RESET_TOKEN_TTL_SECONDS),
+    )
+    db.commit()
+    ok, detail = send_reset_email(token)
+    log_event("admin_reset_requested", email_ok=ok, detail=detail)
+    return render_template("reset_sent.html")
+
+
+@app.route("/admin/reset", methods=["GET", "POST"])
+def admin_reset():
+    """One-time link Kimberly (or whoever holds the email) clicks to set a
+    new admin password. This route is exempt from the site-wide gate — the
+    token IS the auth."""
+    token = (
+        request.args.get("token")
+        or request.form.get("token")
+        or ""
+    )
+    th = _token_hash(token) if token else ""
+    now = int(time.time())
+    db = get_db()
+    row = db.execute(
+        "SELECT 1 FROM password_resets WHERE token_hash = ? AND expires_at >= ? AND used = 0",
+        (th, now),
+    ).fetchone()
+    if not row:
+        return render_template(
+            "reset_form.html",
+            token="",
+            error="This reset link is invalid or has expired. Please request a new one.",
+        ), 400
+
+    if request.method == "GET":
+        return render_template("reset_form.html", token=token)
+
+    new_pw = request.form.get("password") or ""
+    confirm = request.form.get("confirm") or ""
+    if len(new_pw) < RESET_MIN_PASSWORD_LEN:
+        return render_template(
+            "reset_form.html",
+            token=token,
+            error=f"Password must be at least {RESET_MIN_PASSWORD_LEN} characters.",
+        ), 400
+    if not hmac.compare_digest(new_pw, confirm):
+        return render_template(
+            "reset_form.html",
+            token=token,
+            error="The two passwords do not match.",
+        ), 400
+
+    pw_hash = hash_password(new_pw)
+    db.execute(
+        "INSERT INTO admin_credentials (id, password_hash, updated_at) VALUES (1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at",
+        (pw_hash, now),
+    )
+    db.execute(
+        "UPDATE password_resets SET used = 1 WHERE token_hash = ?",
+        (th,),
+    )
+    db.commit()
+    log_event("admin_password_changed")
+    return render_template("reset_done.html")
 
 
 @app.route("/admin/logout", methods=["POST"])

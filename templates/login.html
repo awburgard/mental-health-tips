@@ -21,6 +21,12 @@
     <input id="password" name="password" type="password" required autofocus>
     <p class="button-row"><button type="submit">Sign in</button></p>
   </form>
+
+  {% if reset_enabled %}
+  <form method="post" action="{{ url_for('admin_request_reset') }}" class="reset-link-form">
+    <button type="submit" class="link-button">Reset password (emails the HR reviewer)</button>
+  </form>
+  {% endif %}
 </main>
 </body>
 </html>

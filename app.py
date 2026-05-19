@@ -273,7 +273,6 @@ def _token_hash(token: str) -> str:
 # safety net; the model is the first pass.
 
 import anthropic
-from pydantic import BaseModel
 
 _anthropic_client = None
 
@@ -312,23 +311,22 @@ A submission about an ordinary wellbeing practice (meditation, therapy, boundari
 When in doubt about workplace appropriateness for a public Slack channel that everyone in the company will see, prefer to flag or block rather than allow."""
 
 
-class ModerationResult(BaseModel):
-    hate_speech: bool
-    targeted_harassment: bool
-    sexual_content: bool
-    threats_violence: bool
-    doxxing: bool
-    illegal_advocacy: bool
-    self_harm: bool
-    self_identifying: bool
-    workplace_grievance: bool
-
-
 _BLOCK_CATEGORIES = (
     "hate_speech", "targeted_harassment", "sexual_content",
     "threats_violence", "doxxing", "illegal_advocacy",
 )
 _FLAG_CATEGORIES = ("self_harm", "self_identifying", "workplace_grievance")
+_ALL_CATEGORIES = _BLOCK_CATEGORIES + _FLAG_CATEGORIES
+
+_CLASSIFY_TOOL = {
+    "name": "classify_submission",
+    "description": "Classify the submission against the content policy. Set each field to true if the submission matches that category.",
+    "input_schema": {
+        "type": "object",
+        "required": list(_ALL_CATEGORIES),
+        "properties": {c: {"type": "boolean"} for c in _ALL_CATEGORIES},
+    },
+}
 
 
 def moderate_submission(text: str) -> dict:
@@ -346,27 +344,32 @@ def moderate_submission(text: str) -> dict:
     if client is None:
         return {"block": False, "flag": False, "reasons": []}
     try:
-        response = client.messages.parse(
+        response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=512,
-            system=[{
-                "type": "text",
-                "text": MODERATION_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }],
+            system=MODERATION_SYSTEM_PROMPT,
+            tools=[_CLASSIFY_TOOL],
+            tool_choice={"type": "tool", "name": "classify_submission"},
             messages=[{
                 "role": "user",
                 "content": f"Classify this submission:\n\n<<<\n{text}\n>>>",
             }],
-            output_format=ModerationResult,
         )
-        result = response.parsed_output
+        tool_input = None
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "classify_submission":
+                tool_input = block.input
+                break
+        if tool_input is None:
+            log_event("moderation_no_tool_call", stop_reason=response.stop_reason)
+            return {"block": False, "flag": False, "reasons": []}
     except Exception as e:
-        log_event("moderation_api_error", error=type(e).__name__)
+        log_event("moderation_api_error", error=type(e).__name__,
+                  msg=str(e).replace("\n", " ")[:200])
         return {"block": False, "flag": False, "reasons": []}
 
-    block_hits: List[str] = [c for c in _BLOCK_CATEGORIES if getattr(result, c)]
-    flag_hits: List[str] = [c for c in _FLAG_CATEGORIES if getattr(result, c)]
+    block_hits: List[str] = [c for c in _BLOCK_CATEGORIES if tool_input.get(c)]
+    flag_hits: List[str] = [c for c in _FLAG_CATEGORIES if tool_input.get(c)]
     return {
         "block": bool(block_hits),
         "flag": bool(flag_hits),
